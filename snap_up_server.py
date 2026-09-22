@@ -255,6 +255,25 @@ def buy_now_concurrent(session, headers, cfg, region_ids):
             results.append(f.result())
     return results
 
+def get_next_seckill_time(now=None):
+    """
+    根据当前时间自动推算下一次秒杀场次（每天固定 10:00:00 与 15:00:00 两场）
+    """
+    if now is None:
+        now = datetime.now()
+    today = now.date()
+    round_10 = datetime(today.year, today.month, today.day, 10, 0, 0)
+    round_15 = datetime(today.year, today.month, today.day, 15, 0, 0)
+
+    if now < round_10:
+        return round_10, "今天上午场 (10:00:00)"
+    elif now < round_15:
+        return round_15, "今天下午场 (15:00:00)"
+    else:
+        tomorrow = today + timedelta(days=1)
+        next_dt = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 10, 0, 0)
+        return next_dt, "明天上午场 (10:00:00)"
+
 def main():
     print("=======================================================")
     print("🚀 腾讯云秒杀抢购脚本已启动")
@@ -263,13 +282,31 @@ def main():
     cfg = load_config()
     session, headers = init_session(cfg)
 
-    seckill_time_str = cfg.get("seckill_time", "2026-09-22 15:00:00")
-    try:
-        seckill_dt = datetime.strptime(seckill_time_str, "%Y-%m-%d %H:%M:%S")
-        target_timestamp_ms = int(seckill_dt.timestamp() * 1000)
-    except Exception as e:
-        print(f"❌ 秒杀时间格式错误: {seckill_time_str}，请使用 'YYYY-MM-DD HH:MM:SS' 格式: {e}")
-        sys.exit(1)
+    # 智能秒杀时间识别（支持 auto、留空、或已过期时间自动顺延至下一次 10:00 / 15:00）
+    seckill_time_cfg = str(cfg.get("seckill_time", "auto")).strip()
+    now = datetime.now()
+
+    if seckill_time_cfg.lower() in ["auto", "", "none"]:
+        target_dt, round_desc = get_next_seckill_time(now)
+        seckill_time_str = target_dt.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"🎯 [自动模式] 智能匹配下一次秒杀场次: {round_desc} -> {seckill_time_str}")
+    else:
+        try:
+            specified_dt = datetime.strptime(seckill_time_cfg, "%Y-%m-%d %H:%M:%S")
+            if specified_dt <= now:
+                target_dt, round_desc = get_next_seckill_time(now)
+                seckill_time_str = target_dt.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"💡 提示：配置中的秒杀时间 ({seckill_time_cfg}) 已过时，已自动顺延到下次秒杀: {round_desc} -> {seckill_time_str}")
+            else:
+                target_dt = specified_dt
+                seckill_time_str = seckill_time_cfg
+                print(f"🎯 抢购目标时间: {seckill_time_str}")
+        except Exception:
+            target_dt, round_desc = get_next_seckill_time(now)
+            seckill_time_str = target_dt.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"⚠️ 配置时间格式有误，已自动匹配下次秒杀场次: {round_desc} -> {seckill_time_str}")
+
+    target_timestamp_ms = int(target_dt.timestamp() * 1000)
 
     region_ids = cfg.get("region_ids", [1, 4, 8])
 
