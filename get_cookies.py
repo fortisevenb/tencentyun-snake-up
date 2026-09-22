@@ -149,14 +149,14 @@ def get_cookies():
         cookies = context.cookies()
         cookie_map = {c.get("name"): c.get("value") for c in cookies}
 
-        # 1. 优先尝试使用网络请求抓取到的真实 x-csrf-token
-        # 2. 其次通过 skey 使用官方 DJB2 算法动态计算
-        # 3. 再次尝试从 Cookie 中的 qcmainCSRFToken 提取
-        final_csrf_token = csrf_token_captured
-        if not final_csrf_token and "skey" in cookie_map:
+        # 优先使用根据登录 skey 精确计算出的 DJB2 CSRF Token（与当前 session 严格对齐）
+        final_csrf_token = ""
+        if "skey" in cookie_map and cookie_map["skey"]:
             final_csrf_token = calculate_csrf_token(cookie_map["skey"])
-            print(f"💡 根据已获取的 skey 自动计算出 CSRF Token: {final_csrf_token}")
-        if not final_csrf_token and "qcmainCSRFToken" in cookie_map:
+            print(f"💡 根据登录会话 skey 自动计算出精准 CSRF Token: {final_csrf_token}")
+        elif csrf_token_captured:
+            final_csrf_token = csrf_token_captured
+        elif "qcmainCSRFToken" in cookie_map:
             final_csrf_token = cookie_map["qcmainCSRFToken"]
 
         # 保存 Cookies

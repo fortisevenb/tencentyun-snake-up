@@ -96,8 +96,12 @@ def init_session(cfg):
         print("👉 请重新运行 '1_获取登录Cookie.bat' 扫码登录！")
         print("=" * 65 + "\n")
 
-    # 自动计算 CSRF Token
-    skey = session.cookies.get("skey", "")
+    # 自动计算 CSRF Token（安全提取 skey，兼容多域名同名 Cookie）
+    skey = ""
+    for c in session.cookies:
+        if c.name == "skey" and c.value:
+            skey = c.value
+            break
     computed_token = calculate_csrf_token(skey) if skey else ""
 
     csrf_token = str(cfg.get("csrf_token", "")).strip()
