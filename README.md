@@ -25,12 +25,11 @@
 
 ```mermaid
 flowchart TD
-    A["双击运行 1_获取登录Cookie.bat"] --> B["在弹出的 Edge 浏览器中扫码登录腾讯云"]
-    B --> C["系统自动获取并保存 cookies.json"]
-    C --> D["用记事本打开 config.json 确认秒杀时间（如 15:00:00）"]
-    D --> E["双击运行 2_启动秒杀抢购.bat"]
-    E --> F["脚本自动校准服务器时间并启动阶梯倒计时"]
-    F --> G["倒计时归零，并发向多地域发起抢购冲刺！"]
+    A["&nbsp;&nbsp;<b>第一步：扫码登录</b>&nbsp;&nbsp;<br/>运行 1_获取登录Cookie.bat<br/>在 Edge 浏览器中扫码<br/>自动提取并保存 cookies.json"]
+    B["&nbsp;&nbsp;<b>第二步：确认配置</b>&nbsp;&nbsp;<br/>打开 config.json<br/>确认抢购时间与目标地域"]
+    C["&nbsp;&nbsp;<b>第三步：一键秒杀</b>&nbsp;&nbsp;<br/>运行 2_启动秒杀抢购.bat<br/>毫秒级时钟对齐<br/>并发向多地域冲刺下单"]
+
+    A --> B --> C
 ```
 
 ---
