@@ -287,6 +287,8 @@ def main():
     check_available(session, headers, cfg)
 
     print("\n⏳ 进入倒计时等待...")
+    last_print_sec = None
+
     while True:
         # 当前估算服务器时间
         current_server_ms = int(time.time() * 1000) + offset_ms
@@ -296,28 +298,30 @@ def main():
             print(f"\n🔥 秒杀时刻到达！(偏差 {diff_ms} ms)")
             buy_now_concurrent(session, headers, cfg, region_ids)
             break
-        elif diff_ms > 30000:
+        elif diff_ms > 60000:
             secs = diff_ms // 1000
-            print(f"⏳ 距离秒杀还有 {secs} 秒 (目标: {seckill_time_str})")
-            time.sleep(15)
-            # 周期性重新微调偏差
-            server_ms = get_server_time()
-            offset_ms = server_ms - int(time.time() * 1000)
+            if last_print_sec is None or (last_print_sec - secs) >= 15:
+                print(f"⏳ 距离秒杀还有 {secs} 秒 (目标: {seckill_time_str})")
+                last_print_sec = secs
+            time.sleep(min(10.0, max(1.0, (diff_ms - 60000) / 1000.0)))
         elif diff_ms > 5000:
             secs = diff_ms // 1000
-            print(f"⏳ 距离秒杀还有 {secs} 秒...")
-            time.sleep(2)
+            if last_print_sec != secs:
+                print(f"⏳ 距离秒杀还有 {secs} 秒...")
+                last_print_sec = secs
+            time.sleep(0.5)
         elif diff_ms > 1000:
             print(f"⚡ 即将开始: {diff_ms / 1000.0:.1f} 秒...")
-            time.sleep(0.3)
+            time.sleep(0.1)
         else:
-            # 临近 1 秒内，高精度轮询冲刺
+            # 临近 1 秒内，高精度忙等冲刺 (确保触发偏差在 5ms 以内)
             while True:
                 cur = int(time.time() * 1000) + offset_ms
                 if cur >= target_timestamp_ms:
                     break
-                time.sleep(0.005)
-            print("🔥 时间已到，发起冲刺！")
+                time.sleep(0.001)
+            trigger_diff = (int(time.time() * 1000) + offset_ms) - target_timestamp_ms
+            print(f"\n🔥 秒杀时刻到达！(精确触发偏差: +{trigger_diff} ms)")
             buy_now_concurrent(session, headers, cfg, region_ids)
             break
 

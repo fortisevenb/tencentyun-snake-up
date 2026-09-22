@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 
 if sys.platform == "win32":
     try:
@@ -18,6 +19,16 @@ from playwright.sync_api import sync_playwright
 
 CONFIG_FILE = "config.json"
 COOKIES_FILE = "cookies.json"
+TARGET_ACTIVITY_URL = "https://cloud.tencent.com/act/pro/featured-202607"
+
+def calculate_csrf_token(skey: str) -> str:
+    """腾讯云前端 DJB2 哈希算法计算 x-csrf-token"""
+    if not skey:
+        return ""
+    h = 5381
+    for c in skey:
+        h += (h << 5) + ord(c)
+    return str(h & 0x7fffffff)
 
 def update_config_csrf(csrf_token: str):
     """更新 config.json 中的 csrf_token"""
@@ -26,10 +37,10 @@ def update_config_csrf(csrf_token: str):
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        cfg["csrf_token"] = csrf_token
+        cfg["csrf_token"] = str(csrf_token)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
-        print(f"✅ 已自动将 x-csrf-token 写入 {CONFIG_FILE}")
+        print(f"✅ 已自动将 x-csrf-token ({csrf_token}) 写入 {CONFIG_FILE}")
     except Exception as e:
         print(f"⚠️ 更新 config.json 失败: {e}")
 
@@ -51,30 +62,35 @@ def get_cookies():
         context = browser.new_context()
         page = context.new_page()
 
-        # 监听网络请求，自动抓取 x-csrf-token 请求头
+        # 监听网络请求，自动抓取真实发出的 x-csrf-token 请求头
         def on_request(request):
             nonlocal csrf_token_captured
             token = request.headers.get("x-csrf-token")
             if token and not csrf_token_captured:
                 csrf_token_captured = token
-                print(f"🎯 成功自动捕获到 x-csrf-token: {csrf_token_captured}")
+                print(f"🎯 成功从网络请求中捕获到 x-csrf-token: {csrf_token_captured}")
 
         page.on("request", on_request)
 
-        login_url = "https://cloud.tencent.com/login?s_url=https%3A%2F%2Fcloud.tencent.com%2Fact%2Fpro%2Fdouble12-2025"
+        # 设置登录成功后的回跳地址为当前真实的 2026 采购季秒杀活动页
+        s_url_encoded = urllib.parse.quote(TARGET_ACTIVITY_URL, safe="")
+        login_url = f"https://cloud.tencent.com/login?s_url={s_url_encoded}"
         print(f"👉 正在打开腾讯云登录页面: {login_url}")
         page.goto(login_url)
 
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 65)
         print("📌 请在弹出的浏览器窗口中使用【微信】或【腾讯云App】扫码登录！")
-        print("💡 提示：")
-        print("   1. 手机扫码并点击【确认登录】后，脚本会自动检测跳转并保存凭据。")
-        print("   2. 若网页已登录完成，你也可以直接在当前控制台按【回车键 (Enter)】手动触发保存。")
-        print("=" * 60 + "\n")
+        print("💡 重要提示：")
+        print("   1. 手机扫码确认后，请等待浏览器自动跳转到【2026 采购季秒杀活动页】！")
+        print("   2. 页面右上角显示已登录（如头像/账号ID），说明云账号会话已完整置换。")
+        print("   3. 脚本检测到离开登录页并进入活动页后会自动保存凭据；")
+        print("      你也可以在看到登录成功后，在当前控制台按【回车键 (Enter)】手动触发保存。")
+        print("=" * 65 + "\n")
 
         logged_in = False
         start_time = time.time()
         timeout_seconds = 600  # 10分钟等待超时
+        last_url = ""
 
         while time.time() - start_time < timeout_seconds:
             try:
@@ -90,20 +106,29 @@ def get_cookies():
                     except Exception:
                         pass
 
-                # 方式 2: 检查页面 URL 与真实登录态 Cookie
                 cur_url = page.url
+                if cur_url != last_url:
+                    last_url = cur_url
+
+                # 判断当前页面是否还在登录/OAuth流程中
+                is_on_login = any(k in cur_url.lower() for k in ["/login", "open.weixin.qq.com", "graph.qq.com"])
+
                 cookies = context.cookies()
                 cookie_names = {c.get("name") for c in cookies}
 
-                # 只有真正的用户鉴权 Cookie（排查掉游客追踪用的 qcloud_uid / qcmainCSRFToken / login_intent_id）
-                has_real_auth = any(k in cookie_names for k in ["uin", "skey", "ownerUin", "subUin", "pt4_token", "p_skey", "main_uin"])
-                # 页面已经跳转离开登录页，且已在 cloud.tencent.com 站内
-                left_login = ("login" not in cur_url) and ("cloud.tencent.com" in cur_url)
+                # 检查是否存在基础认证凭据
+                has_auth = "skey" in cookie_names or "uin" in cookie_names
 
-                if has_real_auth or (left_login and len(cookie_names) > 15):
-                    print(f"🎉 自动检测到登录成功！(已离开登录页: {cur_url})")
+                # 关键修复：必须彻底离开登录页，且已在 cloud.tencent.com 站内（如活动页或控制台）
+                arrived_main_site = (not is_on_login) and ("cloud.tencent.com" in cur_url)
+
+                if has_auth and arrived_main_site:
+                    print(f"\n🎉 检测到已完成扫码并成功跳转至活动站内: {cur_url}")
+                    print("⏳ 正在等待 3 秒以确保所有 Session 会话票据完整置换与写入...")
+                    time.sleep(3)
                     logged_in = True
                     break
+
             except Exception:
                 pass
             time.sleep(1)
@@ -113,31 +138,44 @@ def get_cookies():
             browser.close()
             return
 
-        print("⏳ 正在提取登录凭据与安全 Token，请稍候...")
-        # 等待页面加载完成，促发接口请求以便捕获 csrf-token
-        time.sleep(3)
+        print("\n⏳ 正在提取完整登录凭据与安全 Token，请稍候...")
+
+        # 尝试等待页面网络稳定
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
 
         cookies = context.cookies()
-        # 如果未在请求头抓到 x-csrf-token，尝试从 cookies 中提取 qcmainCSRFToken
-        if not csrf_token_captured:
-            for c in cookies:
-                if c.get("name") == "qcmainCSRFToken" and c.get("value"):
-                    csrf_token_captured = c.get("value")
-                    print(f"💡 从 Cookie (qcmainCSRFToken) 提取到 CSRF Token: {csrf_token_captured}")
-                    break
+        cookie_map = {c.get("name"): c.get("value") for c in cookies}
+
+        # 1. 优先尝试使用网络请求抓取到的真实 x-csrf-token
+        # 2. 其次通过 skey 使用官方 DJB2 算法动态计算
+        # 3. 再次尝试从 Cookie 中的 qcmainCSRFToken 提取
+        final_csrf_token = csrf_token_captured
+        if not final_csrf_token and "skey" in cookie_map:
+            final_csrf_token = calculate_csrf_token(cookie_map["skey"])
+            print(f"💡 根据已获取的 skey 自动计算出 CSRF Token: {final_csrf_token}")
+        if not final_csrf_token and "qcmainCSRFToken" in cookie_map:
+            final_csrf_token = cookie_map["qcmainCSRFToken"]
 
         # 保存 Cookies
         with open(COOKIES_FILE, "w", encoding="utf-8") as f:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
-        print(f"✅ Cookies 已保存至: {COOKIES_FILE} (共 {len(cookies)} 项)")
+        print(f"✅ 完整 Cookies 已保存至: {COOKIES_FILE} (共 {len(cookies)} 项)")
+
+        # 打印关键凭据排查信息（安全展示）
+        uin = cookie_map.get("uin", "未找到")
+        owner_uin = cookie_map.get("ownerUin", cookie_map.get("main_uin", "无独立主账号ID"))
+        print(f"📋 账号识别信息: uin={uin}, ownerUin={owner_uin}")
 
         # 保存 CSRF Token
-        if csrf_token_captured:
-            update_config_csrf(csrf_token_captured)
+        if final_csrf_token:
+            update_config_csrf(final_csrf_token)
         else:
-            print("💡 未自动捕获到 x-csrf-token，如抢购提示鉴权失败，可按 F12 在 Network 标头中确认。")
+            print("⚠️ 未能提取到 CSRF Token，若抢购提示鉴权错误请确认登录状态。")
 
-        print("\n✨ 凭据已成功保存！浏览器将在 2 秒后自动关闭。")
+        print("\n✨ 登录凭据获取并校验完成！浏览器将在 2 秒后自动关闭。")
         time.sleep(2)
         browser.close()
 
