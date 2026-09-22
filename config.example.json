@@ -1,0 +1,14 @@
+{
+  "seckill_time": "2026-09-22 15:00:00",
+  "region_ids": [1, 4, 8],
+  "csrf_token": "",
+  "activity_id": 164461404341040,
+  "check_act_id": 1897632168296710,
+  "buy_act_id": 1897632168296710,
+  "bundle_type": "bundle_budget_mc_lg4_01",
+  "business_id": 24475,
+  "image_id": "lhbp-eqora508",
+  "blueprint_id": "LINUX_UNIX",
+  "time_span_unit": "12m",
+  "comment": "38元 4核4G3M 轻量应用服务器秒杀配置示例"
+}

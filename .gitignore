@@ -4,3 +4,8 @@ cookies.json
 .env
 secrets/
 credentials.json
+.venv/
+__pycache__/
+*.pyc
+*.html
+*.log
