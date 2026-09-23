@@ -71,6 +71,10 @@ def init_session(cfg):
         sys.exit(1)
 
     session = requests.Session()
+    session.trust_env = False  # 禁用本地系统代理接管，走物理网络直连腾讯云
+    adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
     try:
         with open(COOKIES_FILE, "r", encoding="utf-8") as f:
             cookies = json.load(f)
@@ -184,8 +188,15 @@ def check_available(session, headers, cfg):
         print(f"⚠️ 库存检查请求异常: {e}")
         return None
 
-def buy_now(session, headers, cfg, region_id):
-    """单个地域下单购买"""
+def keep_alive_heartbeat(session):
+    """向腾讯云发送轻量 HEAD 请求，保持 TCP/TLS 长连接始终处于活跃保活状态"""
+    try:
+        session.head("https://act-api.cloud.tencent.com/dianshi/check-available", timeout=(1.5, 2.0))
+    except Exception:
+        pass
+
+def buy_now(session, headers, cfg, region_id, max_retries=4):
+    """单个地域下单购买（支持快速多波次冲刺重试）"""
     region_names = {1: "广州/华北", 4: "上海/华东", 8: "北京/华南"}
     reg_desc = region_names.get(region_id, f"地域ID_{region_id}")
 
@@ -222,28 +233,35 @@ def buy_now(session, headers, cfg, region_id):
         "preview": 0
     }
 
-    try:
-        start_req = time.time()
-        resp = session.post(
-            "https://act-api.cloud.tencent.com/dianshi/do-goods",
-            json=do_data,
-            headers=headers,
-            timeout=10
-        )
-        cost_ms = int((time.time() - start_req) * 1000)
-        res_json = resp.json()
-        code = res_json.get("code")
-        msg = res_json.get("msg", "")
+    for attempt in range(1, max_retries + 1):
+        try:
+            start_req = time.time()
+            resp = session.post(
+                "https://act-api.cloud.tencent.com/dianshi/do-goods",
+                json=do_data,
+                headers=headers,
+                timeout=(2.0, 3.5)  # 2秒连接超时快速失败，3.5秒读取超时
+            )
+            cost_ms = int((time.time() - start_req) * 1000)
+            res_json = resp.json()
+            code = res_json.get("code")
+            msg = res_json.get("msg", "")
 
-        if code == 0:
-            print(f"\n🎉🎉🎉 [{reg_desc}] 抢购成功！耗时 {cost_ms}ms！返回: {res_json}")
-            return {"success": True, "region_id": region_id, "data": res_json}
-        else:
-            print(f"❌ [{reg_desc}] 下单失败 (code={code}, msg={msg}) [耗时 {cost_ms}ms]")
-            return {"success": False, "region_id": region_id, "data": res_json}
-    except Exception as e:
-        print(f"❌ [{reg_desc}] 请求异常: {e}")
-        return {"success": False, "region_id": region_id, "error": str(e)}
+            if code == 0:
+                print(f"\n🎉🎉🎉 [{reg_desc}] (第{attempt}次尝试) 抢购成功！耗时 {cost_ms}ms！返回: {res_json}")
+                return {"success": True, "region_id": region_id, "data": res_json}
+            else:
+                print(f"❌ [{reg_desc}] (第{attempt}次尝试) 下单返回: code={code}, msg={msg} [耗时 {cost_ms}ms]")
+                # 若提示明确售罄或不可购买，无需继续无效重试
+                if any(k in msg for k in ["已售罄", "已抢光", "上限", "超限", "资格已用"]):
+                    return {"success": False, "region_id": region_id, "data": res_json}
+        except Exception as e:
+            print(f"⚠️ [{reg_desc}] (第{attempt}次尝试) 连接受阻: {e}")
+
+        if attempt < max_retries:
+            time.sleep(0.1)
+
+    return {"success": False, "region_id": region_id, "error": "已达最大重试次数"}
 
 def buy_now_concurrent(session, headers, cfg, region_ids):
     """并发抢购指定的多个地域"""
@@ -329,11 +347,31 @@ def main():
 
     print("\n⏳ 进入倒计时等待...")
     last_print_sec = None
+    last_heartbeat = time.time()
+    warmed_15 = False
+    warmed_5 = False
+    warmed_2 = False
 
     while True:
         # 当前估算服务器时间
         current_server_ms = int(time.time() * 1000) + offset_ms
         diff_ms = target_timestamp_ms - current_server_ms
+
+        # 无论提前多久挂机，每 10 秒主动向腾讯云发送轻量心跳，维持 TCP/TLS 长连接永不中断
+        if (time.time() - last_heartbeat >= 10) and (diff_ms > 15000):
+            keep_alive_heartbeat(session)
+            last_heartbeat = time.time()
+
+        # 临近冲刺专属保活热身：T-15s, T-5s, T-2s 确保连接池处于最高热度
+        if diff_ms <= 15000 and not warmed_15:
+            keep_alive_heartbeat(session)
+            warmed_15 = True
+        elif diff_ms <= 5000 and not warmed_5:
+            keep_alive_heartbeat(session)
+            warmed_5 = True
+        elif diff_ms <= 2000 and not warmed_2:
+            keep_alive_heartbeat(session)
+            warmed_2 = True
 
         if diff_ms <= 0:
             print(f"\n🔥 秒杀时刻到达！(偏差 {diff_ms} ms)")
@@ -342,17 +380,17 @@ def main():
         elif diff_ms > 60000:
             secs = diff_ms // 1000
             if last_print_sec is None or (last_print_sec - secs) >= 15:
-                print(f"⏳ 距离秒杀还有 {secs} 秒 (目标: {seckill_time_str})")
+                print(f"⏳ 距离秒杀还有 {secs} 秒 (目标: {seckill_time_str}) [网络连接保持活跃中]")
                 last_print_sec = secs
             time.sleep(min(10.0, max(1.0, (diff_ms - 60000) / 1000.0)))
         elif diff_ms > 5000:
             secs = diff_ms // 1000
             if last_print_sec != secs:
-                print(f"⏳ 距离秒杀还有 {secs} 秒...")
+                print(f"⏳ 距离秒杀还有 {secs} 秒... [连接池已热身]")
                 last_print_sec = secs
             time.sleep(0.5)
         elif diff_ms > 1000:
-            print(f"⚡ 即将开始: {diff_ms / 1000.0:.1f} 秒...")
+            print(f"⚡ 即将开始: {diff_ms / 1000.0:.1f} 秒... [全链路就绪]")
             time.sleep(0.1)
         else:
             # 临近 1 秒内，高精度忙等冲刺 (确保触发偏差在 5ms 以内)
